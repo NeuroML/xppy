@@ -18,7 +18,7 @@ from distutils.core import setup
 from xppy import __version__ 
 
 setup(name='xppy',
-      version=__version__,
+      version='0.7.0',
       description='XPP interface for Python, with additional utilities.',
       author='Jakub Nowacki',
       author_email='j.s.nowacki@gmail.com',
