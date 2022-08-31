@@ -45,7 +45,7 @@ def parse_sl(file_name):
     Function parses XPPAut generated solution file (one with extension 'q')
     named file_name and returns the solutions.
     '''
-    print 'Warning! Function is obsolete, use parseSolution instead!'
+    print('Warning! Function is obsolete, use parseSolution instead!')
     parseSolution(file_name)
     
 def parseSolution(file_name):
@@ -102,7 +102,7 @@ def parse_bf(file_name):
     Function parses XPPAut generated solution file (one with extension 'q')
     named file_name and returns the solutions.
     '''
-    print 'Warning! Function is obsolete, use parseBifDiag instead!'
+    print('Warning! Function is obsolete, use parseBifDiag instead!')
     parseBifDiag(file_name)
 
 def parseBifDiag(file_name):
@@ -110,7 +110,7 @@ def parseBifDiag(file_name):
     Function parses XPPAut generated bif. diagram file (one with extension 'p')
     named file_name and returns the data.
     '''
-    print 'Parsing bifurcation diagram file:',file_name
+    print('Parsing bifurcation diagram file:',file_name)
     f = open(file_name, 'r')
     d = []
     for l in f:
