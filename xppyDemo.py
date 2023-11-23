@@ -1,7 +1,7 @@
 # coding: utf-8
 import xppy
-xppy.set_cmd('/PATH_TO_XPPAUT/')
-subHopf=xppy.run('SOME_ODE_FILE.ode')
+xppy.set_cmd('/usr/bin')       # Change this to xppaut in your path
+subHopf=xppy.run('examples/nca.ode')
 subHopf.getDesc()
 sHData=subHopf.getRawData()
 sHData.shape
