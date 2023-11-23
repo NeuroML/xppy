@@ -1,3 +1,7 @@
+*This is a fork of xppy by NeuroML. Work in progress...*
+----------------------------------------------------------------------------
+Original readme from https://github.com/jsnowacki/xppy:
+
 [UNMAINTAINED] The library is no logner maintained by me as I don't work in the area anymore. Please see the forks for newer, maintened versions.
 
 XPPy is a Python interface for Bard Ermentrout's XPP. XPPy was inspired by a 
