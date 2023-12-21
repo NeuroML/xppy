@@ -1,11 +1,33 @@
 import sys
 from pprint import pprint
 
+
+XPP_TIME = 'xpp_time'
+LEMS_TIME = 't'
+
+def _closing_bracket_index(expr, open_bracket_index):
+    depth = 0
+    print('Looking for closing bracket of %s from %i, i.e. %s'%(expr, open_bracket_index, expr[open_bracket_index:]))
+    for i in range(open_bracket_index+1, len(expr)):
+        if expr[i]=='(': depth+=1
+        if expr[i]==')':
+            if depth == 0: 
+                print('++++++found at %i: %s'%(i,expr[open_bracket_index:i+1]))
+                return i
+            else:
+                depth -=1
+    raise Exception('Not found!')
+
 def _split_if_then_else(expr):
     print('Splitting: %s'%expr)
-    condition = expr[2:].split('then')[0]
-    value_true = expr[2:].split('then')[1].split('else')[0]
-    value_false = expr[2:].split('then')[1].split('else')[1]
+    cond_end = _closing_bracket_index(expr, 2)
+    condition = expr[3:cond_end]
+    true_start = cond_end+5
+    true_end = _closing_bracket_index(expr, true_start)
+    value_true = expr[true_start+1:true_end]
+    false_start = true_end+5
+    false_end = _closing_bracket_index(expr, false_start)
+    value_false = expr[false_start+1:false_end]
 
     return {'condition':condition,"value_true":value_true,"value_false":value_false}
 
@@ -126,7 +148,7 @@ def substitute_functions(expr, functions):
                 # print('    - replacing <%s> by <%s> - <%s>'%(def_arg, expr_arg.strip(), substitution))
 
             # Replace the function call with the substitution
-            expr = expr.replace(f"{func_name}({match})", substitution)
+            expr = expr.replace(f"{func_name}({match})", '(%s)'%substitution)
 
         # print('  - Expr now: <%s>'%(expr))
     return expr
@@ -155,6 +177,10 @@ def to_xpp(data, new_xpp_filename):
     for k,v in data["derived_variables"].items():
         xpp_ode += f"{k} = {v}\n"
 
+    xpp_ode+='\n# Conditional derived variables\n'
+    for k,v in data["conditional_derived_variables"].items():
+        xpp_ode += f"{k} = if({v['condition']})then({v['value_true']})else({v['value_false']})\n"
+
     xpp_ode+='\n# Initial values\n'
     for k,v in data["initial_values"].items():
         xpp_ode += f"init {k} = {v}\n"
@@ -171,6 +197,25 @@ def to_xpp(data, new_xpp_filename):
     print('Written %s'%new_xpp_filename)
 
 
+def _substitute_single_var(expr, old_var, new_var):
+    import sympy
+    from sympy.parsing.sympy_parser import parse_expr
+    expr = expr.replace('^','**')
+    print(' -- %s'%expr)
+
+    s_expr = parse_expr(expr, evaluate=False)
+    a,b = sympy.symbols('%s %s'%(old_var, new_var))
+    s_expr = s_expr.subs(a,b)
+    new_expr = str(s_expr).replace('**','^')
+    print('a: %s, b: %s, expr: %s -> %s'%(a,b, s_expr, new_expr))
+
+    return new_expr
+
+def _make_lems_friendly(expr):
+
+    expr = _substitute_single_var(expr, LEMS_TIME, XPP_TIME)
+
+    return expr
 
 def to_lems(data, lems_model_id, lems_model_file):
 
@@ -184,9 +229,12 @@ def to_lems(data, lems_model_id, lems_model_file):
     
     comp = lems.Component("%s_0"%ct.name, ct.name)
     model.add(comp)
-        
-        
+
     ct.add(lems.Constant('MSEC', '1ms', "time"))
+        
+    #ct.dynamics.add(lems.StateVariable(XPP_TIME, "none", XPP_TIME))
+    ct.add(lems.Exposure(XPP_TIME, "none"))
+    ct.dynamics.add(lems.DerivedVariable(name=XPP_TIME, exposure=XPP_TIME, dimension='none', value='t/MSEC'))
 
     for k,v in data["parameters"].items():
         ct.add(lems.Parameter(k, "none"))
@@ -205,12 +253,34 @@ def to_lems(data, lems_model_id, lems_model_file):
         print(f"DV: <{v}> -> <{dv_expr}>")
 
         ct.dynamics.add(lems.DerivedVariable(name=k, exposure=k, dimension='none', value=dv_expr))
+
+    for k,v in data["conditional_derived_variables"].items():
+        ct.add(lems.Exposure(k, "none"))
+
+        cdv_cond = substitute_functions(v['condition'], data["functions"])
+        cdv_cond = _make_lems_friendly(cdv_cond)
+
+        print(f"CDV: <{v['condition']}> -> <{cdv_cond}>")
+        cdv_cond = cdv_cond.replace('<=','.leq.').replace('>=','.geq.').replace('<','.lt.').replace('>','.gt.').replace('!=','.neq.').replace('==','.eq.')
+
+        cdv_opp = cdv_cond.replace('.gt.','.leq.').replace('.lt.','.geq.').replace('.geq.','.lt.').replace('.leq.','.gt.').replace('.eq.','.neq.').replace('.neq.','.eq.')
+        
+        cdv_true = substitute_functions(v['value_true'], data["functions"])
+        print(f"CDV: <{v['value_true']}> -> <{cdv_true}>")
+        cdv_false = substitute_functions(v['value_false'], data["functions"])
+        print(f"CDV: <{v['value_false']}> -> <{cdv_false}>")
+
+        cdv = lems.ConditionalDerivedVariable(name=k, exposure=k, dimension='none')
+        ct.dynamics.add(cdv)
+        cdv.add(lems.Case(condition=cdv_cond, value=_make_lems_friendly(cdv_true)))
+        cdv.add(lems.Case(condition=cdv_opp, value=_make_lems_friendly(cdv_false)))
     
     for k,v in data["time_derivatives"].items():
         ct.add(lems.Exposure(k, "none"))
         ct.dynamics.add(lems.StateVariable(k, "none", k))
 
         td_expr = substitute_functions(v, data["functions"])
+        td_expr = _make_lems_friendly(td_expr)
         print(f"TD: <{v}> -> <{td_expr}>")
 
         ct.dynamics.add(lems.TimeDerivative(k, '(%s)/MSEC'%td_expr))
@@ -236,7 +306,8 @@ def to_lems(data, lems_model_id, lems_model_file):
 
     from pyneuroml.utils.plot import get_next_hex_color
     for e in ct.exposures:
-        ls.add_line_to_display(disp0, e.name, "%s"%(e.name), "1", get_next_hex_color())
+        if not e.name == XPP_TIME:
+            ls.add_line_to_display(disp0, e.name, "%s"%(e.name), "1", get_next_hex_color())
 
     '''
     of0 = "Volts_file"
@@ -250,18 +321,18 @@ def to_lems(data, lems_model_id, lems_model_file):
 
     ls.set_report_file("report.txt")
 
-    print("Using information to generate LEMS: ")
-    pprint(ls.lems_info)
-    print("\nLEMS: ")
-    print(ls.to_xml())
+    #print("Using information to generate LEMS: ")
+    #pprint(ls.lems_info)
+    #print("\nLEMS: ")
+    #print(ls.to_xml())
 
     ls.save_to_file()
 
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python script.py <filename>")
+    if len(sys.argv) < 2:
+        print("Usage: python script.py filename <-lems> <-xpp>")
         sys.exit(1)
 
     file_path = sys.argv[1]
@@ -271,5 +342,8 @@ if __name__ == "__main__":
     lems_model_id = file_path.replace('.ode','').split('/')[-1]
     lems_model_file = file_path.replace('.ode','.model.xml')
 
-    to_lems(parsed_data, lems_model_id, lems_model_file)
-    to_xpp(parsed_data, file_path.replace('.ode','_2.ode'))
+    if '-lems' in sys.argv:
+        to_lems(parsed_data, lems_model_id, lems_model_file)
+
+    if '-xpp' in sys.argv:
+        to_xpp(parsed_data, file_path.replace('.ode','_2.ode'))
