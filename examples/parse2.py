@@ -1,12 +1,26 @@
 import sys
 from pprint import pprint
 
+def _split_if_then_else(expr):
+    print('Splitting: %s'%expr)
+    condition = expr[2:].split('then')[0]
+    value_true = expr[2:].split('then')[1].split('else')[0]
+    value_false = expr[2:].split('then')[1].split('else')[1]
+
+    return {'condition':condition,"value_true":value_true,"value_false":value_false}
+
+def _add_cond_deriv_var():
+    pass
+
+INBUILT = {'pi':3.14159265359}
+
 def parse_script(file_path):
     data = {
         "comments": [],
-        "parameters": {},
+        "parameters": dict(INBUILT),
         "functions": {},
         "derived_variables": {},
+        "conditional_derived_variables": {},
         "time_derivatives": {},
         "initial_values": {},
         "settings": {},
@@ -27,11 +41,20 @@ def parse_script(file_path):
 
             # Handle parameter declarations
             elif line.startswith(('number', 'p', 'par')):
-                params = line.split()[1]  # Skip the first word ('number', 'p', or 'par')
-                for pp in params.split(','):
+                params = line.replace('number ', '').replace('par ', '').replace('p ', '')  # Skip the first word ('number', 'p', or 'par')
+                for pp1 in params.split(','):
+                    for pp2 in pp1.split(' '):
+                        if len(pp2)>0:
+                            key, value = pp2.split('=')
+                            data["parameters"][key.strip()] = float(value.strip())
+
+            # Handle init declarations
+            elif line.startswith(('init')):
+                inits = line[5:]
+                for pp in inits.split(','):
                     if len(pp)>0:
                         key, value = pp.split('=')
-                        data["parameters"][key.strip()] = float(value.strip())
+                        data["initial_values"][key.strip()] = float(value.strip())
 
             # Handle function and initial value declarations
             elif '=' in line and not line.startswith("@"):
@@ -52,7 +75,13 @@ def parse_script(file_path):
                     data["functions"][func_name]['arguments'] = func_args
                     data["functions"][func_name]['value'] = value.strip()
                 else:
-                    data["derived_variables"][key.strip()] = value.strip()
+                    # "Normal" variable...
+                    expr = value.strip()
+                    if 'if' in expr and 'else' in expr:
+                        
+                        data["conditional_derived_variables"][key.strip()] = _split_if_then_else(expr)
+                    else:
+                        data["derived_variables"][key.strip()] = expr
 
             # Handle done
             elif line == 'done':
@@ -65,7 +94,7 @@ def parse_script(file_path):
                     for ss in sss.split(','):
                         if len(ss)>0:
                             key, value = ss.split('=')
-                            data["settings"][key.strip()] = value.strip()
+                            data["settings"][key.strip().lower()] = value.strip()
 
                 
 
@@ -79,7 +108,7 @@ def substitute_functions(expr, functions):
     import re
 
     for func_name, func_def in functions.items():
-        print('  - Function %s, replacing %s in <%s>'%(func_name, func_def,expr))
+        # print('  - Function %s, replacing %s in <%s>'%(func_name, func_def,expr))
         # Find all occurrences of the function in the expression
         pattern = f"{func_name}\(([^)]+)\)"
         matches = re.findall(pattern, expr)
@@ -94,13 +123,53 @@ def substitute_functions(expr, functions):
             for def_arg, expr_arg in zip(func_def['arguments'], args_in_expr):
 
                 substitution = substitution.replace(def_arg, expr_arg.strip())
-                print('    - replacing <%s> by <%s> - <%s>'%(def_arg, expr_arg.strip(), substitution))
+                # print('    - replacing <%s> by <%s> - <%s>'%(def_arg, expr_arg.strip(), substitution))
 
             # Replace the function call with the substitution
             expr = expr.replace(f"{func_name}({match})", substitution)
 
-        print('  - Expr now: <%s>'%(expr))
+        # print('  - Expr now: <%s>'%(expr))
     return expr
+
+def to_xpp(data, new_xpp_filename):
+
+    xpp_ode = ''
+
+    xpp_ode+='\n# Parameters\n'
+    for k,v in data["parameters"].items():
+        if not k in INBUILT.keys():
+            xpp_ode += f'{k} = {v}\n'
+
+    xpp_ode+='\n# Functions\n'
+    for k,v in data["functions"].items():
+        xpp_ode += f'{k}('
+        for a in v['arguments']: xpp_ode += '%s,'%a
+        xpp_ode=xpp_ode[:-1]
+        xpp_ode += ') = %s\n'%v['value']
+
+    xpp_ode+='\n# Time derivatives\n'
+    for k,v in data["time_derivatives"].items():
+        xpp_ode += f"{k}' = {v}\n"
+
+    xpp_ode+='\n# Derived variables\n'
+    for k,v in data["derived_variables"].items():
+        xpp_ode += f"{k} = {v}\n"
+
+    xpp_ode+='\n# Initial values\n'
+    for k,v in data["initial_values"].items():
+        xpp_ode += f"init {k} = {v}\n"
+
+    xpp_ode+='\n# Settings\n'
+    for k,v in data["settings"].items():
+        xpp_ode += f"@ {k.upper()}={v}\n"
+    
+    xpp_ode+='\ndone\n'
+
+    with open(new_xpp_filename, 'w') as f:
+        f.write(xpp_ode)
+
+    print('Written %s'%new_xpp_filename)
+
 
 
 def to_lems(data, lems_model_id, lems_model_file):
@@ -151,8 +220,12 @@ def to_lems(data, lems_model_id, lems_model_file):
 
 
     from pyneuroml.lems import LEMSSimulation
+
+    duration = float(data['settings']['total']) if 'total' in data['settings'] else 1000
+    dt = float(data['settings']['dtmin']) if 'dtmin' in data['settings'] else \
+           (float(data['settings']['dt']) if 'dt' in data['settings'] else 0.025)
     
-    ls = LEMSSimulation(lems_model_id, 500, 0.05, comp.id)
+    ls = LEMSSimulation(lems_model_id, duration, dt, comp.id)
 
     ls.include_lems_file(lems_model_file)
 
@@ -185,6 +258,7 @@ def to_lems(data, lems_model_id, lems_model_file):
     ls.save_to_file()
 
 
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: python script.py <filename>")
@@ -198,3 +272,4 @@ if __name__ == "__main__":
     lems_model_file = file_path.replace('.ode','.model.xml')
 
     to_lems(parsed_data, lems_model_id, lems_model_file)
+    to_xpp(parsed_data, file_path.replace('.ode','_2.ode'))
