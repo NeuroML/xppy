@@ -3,3 +3,9 @@ __pycache__/
 build/
 /output.dat
 /xppy.egg-info
+/examples/*_2.ode
+/examples/report.txt
+/examples/output.dat
+/examples/*_brain.py
+/examples/LEMS_*.xml
+/examples/*.model.xml

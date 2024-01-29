@@ -1,9 +1,10 @@
 import sys
 from pprint import pprint
 
-
 XPP_TIME = 'xpp_time'
 LEMS_TIME = 't'
+
+verbose = True
 
 def _closing_bracket_index(expr, open_bracket_index):
     depth = 0
@@ -17,6 +18,7 @@ def _closing_bracket_index(expr, open_bracket_index):
             else:
                 depth -=1
     raise Exception('Not found!')
+
 
 def _split_if_then_else(expr):
     print('Splitting: %s'%expr)
@@ -55,6 +57,9 @@ def parse_script(file_path):
             if not line:
                 continue
 
+            if verbose: 
+                print('--- Parsing line: %s'%line)
+
             # Handle comments
             if line.startswith("#"):
                 c = line[1:].strip()
@@ -62,8 +67,8 @@ def parse_script(file_path):
                     data["comments"].append(c)
 
             # Handle parameter declarations
-            elif line.startswith(('number', 'p', 'par')):
-                params = line.replace('number ', '').replace('par ', '').replace('p ', '')  # Skip the first word ('number', 'p', or 'par')
+            elif line.startswith(('number', 'p', 'par', 'param')):
+                params = line.replace('number ', '').replace('par ', '').replace('p ', '').replace('param ', '')  # Skip the first word ('number', 'p', 'param' or 'par')
                 for pp1 in params.split(','):
                     for pp2 in pp1.split(' '):
                         if len(pp2)>0:
@@ -81,10 +86,19 @@ def parse_script(file_path):
             # Handle function and initial value declarations
             elif '=' in line and not line.startswith("@"):
                 key, value = line.split('=', 1)
+
+                if verbose: 
+                    print('  --- Parsing equality: %s = %s'%(key, value))
+
                 if "'" in key:
-                    # Initial value
+                    # derivative
                     var_name = key.split("'")[0].strip()
                     data["time_derivatives"][var_name] = value.strip()
+                elif "/dt" in key:
+                    # derivative
+                    var_name = key.strip()[1:-3]
+                    data["time_derivatives"][var_name] = value.strip()
+                    print(var_name)
                 elif '[0]' in key or '(0)' in key:
                     # Initial value
                     var_name = key.split('[')[0].split('(')[0].strip()
@@ -118,7 +132,6 @@ def parse_script(file_path):
                             key, value = ss.split('=')
                             data["settings"][key.strip().lower()] = value.strip()
 
-                
 
             else:
                 data["unhandled"].append(line)
@@ -200,6 +213,9 @@ def to_xpp(data, new_xpp_filename):
 def _substitute_single_var(expr, old_var, new_var):
     import sympy
     from sympy.parsing.sympy_parser import parse_expr
+    if verbose:  print('     -- Substituting <%s> for <%s> in <%s>'%(old_var, new_var, expr))
+    if not old_var in expr:
+        return expr
     expr = expr.replace('^','**')
     print(' -- %s'%expr)
 
@@ -330,6 +346,157 @@ def to_lems(data, lems_model_id, lems_model_file):
 
 
 
+def to_brian2(data, brian_file):
+
+    brian_script = 'from brian2 import *\n\n'
+
+    eqns = ''
+    post = ''
+    save = 'all_data = np.array( [ '
+
+    for k,v in data["time_derivatives"].items():
+
+        td_expr = substitute_functions(v, data["functions"])
+        td_expr = _make_lems_friendly(td_expr)
+        print(f"TD: <{v}> -> <{td_expr}>")
+
+        eqns += "    d%s/dt = %s : 1\n" % (k, '(%s)/MSEC'%td_expr)
+
+        post += "record_%s = StateMonitor(pop,'%s',record=[0])\n\n"%(k,k)
+
+        if not '.t,' in save:
+            save += "record_%s.t"%k
+
+        save += ", record_%s.%s[0]"%(k,k)
+
+    save += """ ])
+
+all_data = all_data.transpose()
+file_of1 = open("output.dat", 'w')
+for l in all_data:
+    line = ''
+    for c in l: 
+        line = line + ('\\t%s'%c if len(line)>0 else '%s'%c)
+    file_of1.write(line+'\\n')
+
+file_of1.close()"""
+
+
+    eqns += '    MSEC = 1*msecond : second\n'
+        
+    eqns += '    %s = t/MSEC : 1\n' % XPP_TIME
+
+    for k,v in data["parameters"].items():
+        if not k == 'pi':
+            eqns += '    %s = %s : 1\n' % (k,v)
+
+    for k,v in data["derived_variables"].items():
+
+        dv_expr = substitute_functions(v, data["functions"])
+        print(f"DV: <{v}> -> <{dv_expr}>")
+
+        eqns += '    %s = %s : 1\n' % (k, dv_expr)
+
+
+    ''' 
+    os = lems.OnStart()
+    ct.dynamics.add(os)
+
+    for k,v in data["initial_values"].items():
+        os.add(lems.StateAssignment(k,str(v)))
+    
+
+    for k,v in data["conditional_derived_variables"].items():
+        ct.add(lems.Exposure(k, "none"))
+
+        cdv_cond = substitute_functions(v['condition'], data["functions"])
+        cdv_cond = _make_lems_friendly(cdv_cond)
+
+        print(f"CDV: <{v['condition']}> -> <{cdv_cond}>")
+        cdv_cond = cdv_cond.replace('<=','.leq.').replace('>=','.geq.').replace('<','.lt.').replace('>','.gt.').replace('!=','.neq.').replace('==','.eq.')
+
+        cdv_opp = cdv_cond.replace('.gt.','.leq.').replace('.lt.','.geq.').replace('.geq.','.lt.').replace('.leq.','.gt.').replace('.eq.','.neq.').replace('.neq.','.eq.')
+        
+        cdv_true = substitute_functions(v['value_true'], data["functions"])
+        print(f"CDV: <{v['value_true']}> -> <{cdv_true}>")
+        cdv_false = substitute_functions(v['value_false'], data["functions"])
+        print(f"CDV: <{v['value_false']}> -> <{cdv_false}>")
+
+        cdv = lems.ConditionalDerivedVariable(name=k, exposure=k, dimension='none')
+        ct.dynamics.add(cdv)
+        cdv.add(lems.Case(condition=cdv_cond, value=_make_lems_friendly(cdv_true)))
+        cdv.add(lems.Case(condition=cdv_opp, value=_make_lems_friendly(cdv_false)))
+    '''
+
+
+    brian_script += "eqns = Equations('''\n%s''')\n\n"%eqns
+
+    duration = float(data['settings']['total']) if 'total' in data['settings'] else 1000
+    dt = float(data['settings']['dtmin']) if 'dtmin' in data['settings'] else \
+           (float(data['settings']['dt']) if 'dt' in data['settings'] else 0.025)
+
+
+    brian_script += "defaultclock.dt = %s*msecond\n"%dt
+    brian_script += "duration = %s*msecond\n"%duration
+    brian_script += "steps = int(duration/defaultclock.dt)+1\n\n"
+
+    brian_script += "pop = NeuronGroup(1, model=eqns)\n\n"
+
+    brian_script += "%s\n\n"%post
+
+    brian_script += "run(duration) # Run a simulation from t=0 to just before t=duration \n\n"
+
+
+    brian_script += "%s\n\n"%save
+    
+    brian_script += "print('Finished Brian 2 simulation of duration %s ms') \n\n"%duration
+    
+    print('Saving Brain model to: %s'%brian_file)
+    
+    with open(brian_file, 'w') as f:
+        f.write(brian_script)
+
+    print('Written %s'%brian_file)
+
+    """
+    from pyneuroml.lems import LEMSSimulation
+
+    
+    ls = LEMSSimulation(lems_model_id, duration, dt, comp.id)
+
+    ls.include_lems_file(lems_model_file)
+
+    
+    disp0 = "Exposures"
+
+    ls.create_display(disp0, "Params", "-90", "50")
+
+    from pyneuroml.utils.plot import get_next_hex_color
+    for e in ct.exposures:
+        if not e.name == XPP_TIME:
+            ls.add_line_to_display(disp0, e.name, "%s"%(e.name), "1", get_next_hex_color())
+
+    '''
+    of0 = "Volts_file"
+    ls.create_output_file(of0, "%s.v.dat" % lems_model_id)
+    ls.add_column_to_output_file(of0, "v", "hhpop[0]/v")
+
+    eof0 = "Events_file"
+    ls.create_event_output_file(eof0, "%s.v.spikes" % lems_model_id, format="ID_TIME")
+
+    ls.add_selection_to_event_output_file(eof0, "0", "hhpop[0]", "spike")'''
+
+    ls.set_report_file("report.txt")
+
+    #print("Using information to generate LEMS: ")
+    #pprint(ls.lems_info)
+    #print("\nLEMS: ")
+    #print(ls.to_xml())
+
+    ls.save_to_file()"""
+
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python script.py filename <-lems> <-xpp>")
@@ -347,3 +514,6 @@ if __name__ == "__main__":
 
     if '-xpp' in sys.argv:
         to_xpp(parsed_data, file_path.replace('.ode','_2.ode'))
+
+    if '-brian' in sys.argv:
+        to_brian2(parsed_data, file_path.replace('.ode','_brain.py'))
